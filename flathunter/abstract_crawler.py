@@ -71,7 +71,13 @@ class Crawler:
             return self.get_soup_with_proxy(url)
         if driver is not None:
             driver.get(url)
-            if re.search("g-recaptcha", driver.page_source):
+            sleep(4)
+            self.__log__.debug("Checking geetest: %s" % driver.execute_script(f'return window.GeeChallenge'))
+            if re.search("initGeetest", driver.page_source):
+                self.__log__.debug("Found geetest captcha - attempting to solve")
+                self.resolvegeetestcaptcha(driver, captcha_api_key)
+            elif re.search("g-recaptcha", driver.page_source):
+                self.__log__.debug("Found recaptcha captcha - attempting to solve")
                 self.resolvecaptcha(driver, checkbox, afterlogin_string, captcha_api_key)
             return BeautifulSoup(driver.page_source, 'html.parser')
         return BeautifulSoup(resp.content, 'html.parser')
@@ -147,6 +153,12 @@ class Crawler:
         """Loads additional detalis for an expose. Should be implemented in the subclass"""
         return expose
 
+    def resolvegeetestcaptcha(self, driver, api_key: str):
+        gt = re.search('gt: \"([^"]+)\",', driver.page_source)
+        challenge = re.search('challenge: \"([^"]+)\",', driver.page_source)
+        if (gt is not None and challenge is not None):
+            self._solve_geetest(driver, api_key, gt.group(1), challenge.group(1))
+
     def resolvecaptcha(self, driver, checkbox: bool, afterlogin_string: str = "", api_key: str = None):
         iframe_present = self._check_if_iframe_visible(driver)
         if checkbox is False and afterlogin_string == "" and iframe_present:
@@ -179,6 +191,28 @@ class Crawler:
         #  reverse engineer it by hand. Not sure if there is a way to automate it.
         driver.execute_script(f'solvedCaptcha("{recaptcha_answer}")')
         self._check_if_iframe_not_visible(driver)
+
+    def _solve_geetest(self, driver, api_key: str, gt: str, challenge: str):
+        url = driver.current_url
+        self.__log__.debug(f"Attempting with gt: {gt} challenge: {challenge}")
+        session = requests.Session()
+        postrequest = (
+            f"http://2captcha.com/in.php?key={api_key}&method=geetest&gt={gt}&challenge={challenge}&pageurl={url}"
+        )
+        captcha_id = session.post(postrequest).text.split("|")[1]
+        geetest_answer = session.get(f"http://2captcha.com/res.php?key={api_key}&action=get&id={captcha_id}").text
+        while "CAPCHA_NOT_READY" in geetest_answer:
+            sleep(5)
+            self.__log__.debug("Captcha status: %s", geetest_answer)
+            geetest_answer = session.get(f"http://2captcha.com/res.php?key={api_key}&action=get&id={captcha_id}").text
+        self.__log__.debug("Captcha promise: %s", geetest_answer)
+#        recaptcha_answer = recaptcha_answer.split("|")[1]
+#        driver.execute_script(f'document.getElementById("g-recaptcha-response").innerHTML="{recaptcha_answer}";')
+        # TODO: Below function call can be different depending on the websites implementation. It is responsible for
+        #  sending the the promise that we get from recaptcha_answer. For now, if it breaks, it is required to
+        #  reverse engineer it by hand. Not sure if there is a way to automate it.
+#        driver.execute_script(f'solvedCaptcha("{recaptcha_answer}")')
+#        self._check_if_iframe_not_visible(driver)
 
     def _clickcaptcha(self, driver, checkbox: bool):
         driver.switch_to.frame(driver.find_element_by_tag_name("iframe"))
